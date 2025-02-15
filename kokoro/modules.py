@@ -2,10 +2,9 @@
 from .istftnet import AdainResBlk1d
 from torch.nn.utils import weight_norm
 from transformers import AlbertModel
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 
 class LinearNorm(nn.Module):
@@ -110,20 +109,17 @@ class ProsodyPredictor(nn.Module):
 
         self.lstm.flatten_parameters()
 
-    def forward(self, texts, style, text_lengths, alignment, m):
-        d = self.text_encoder(texts, style, text_lengths, m)
+    def forward(self, texts, style, text_lengths, alignment, mask):
+        d = self.text_encoder(texts, style, text_lengths, mask)
         if x.shape[0] > 1:
             input_lengths = text_lengths.cpu().numpy()
             x = nn.utils.rnn.pack_padded_sequence(d, input_lengths, batch_first=True, enforce_sorted=False)
             x, _ = self.lstm(x)
             x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         else:
-            x, _ = self.lstm(x)
-        m = m.to(text_lengths.device).unsqueeze(1)
-        x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]], device=x.device)
-        x_pad[:, :x.shape[1], :] = x
-        x = x_pad
-        duration = self.duration_proj(nn.functional.dropout(x, 0.5, training=False))
+            x, _ = self.lstm(d)
+
+        duration = self.duration_proj(F.dropout(x, 0.5, training=self.training))
         en = (d.transpose(-1, -2) @ alignment)
         return duration.squeeze(-1), en
 
