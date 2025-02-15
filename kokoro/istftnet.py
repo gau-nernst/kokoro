@@ -152,7 +152,8 @@ class SineGen(nn.Module):
         rad_values[:, 0, :] = rad_values[:, 0, :] + rand_ini
         # instantanouse phase sine[t] = sin(2*pi \sum_i=1 ^{t} rad)
         if not self.flag_for_pulse:
-            rad_values = F.interpolate(rad_values.transpose(1, 2), scale_factor=1/self.upsample_scale, mode="linear").transpose(1, 2)
+            # https://github.com/pytorch/pytorch/issues/147261
+            rad_values = F.interpolate(rad_values.transpose(1, 2), size=(rad_values.shape[1] // self.upsample_scale,), mode="linear").transpose(1, 2)
             phase = torch.cumsum(rad_values, dim=1) * 2 * np.pi
             phase = F.interpolate(phase.transpose(1, 2) * self.upsample_scale, scale_factor=self.upsample_scale, mode="linear").transpose(1, 2)
             sines = torch.sin(phase)
@@ -189,9 +190,9 @@ class SineGen(nn.Module):
         output sine_tensor: tensor(batchsize=1, length, dim)
         output uv: tensor(batchsize=1, length, 1)
         """
-        f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
+        # f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
         # fundamental component
-        fn = torch.multiply(f0, torch.tensor([[range(1, self.harmonic_num + 2)]], device=f0.device, dtype=torch.float32))
+        fn = f0 * torch.arange(1, self.harmonic_num + 2, device=f0.device)
         # generate sine waveforms
         sine_waves = self._f02sine(fn) * self.sine_amp
         # generate uv signal
