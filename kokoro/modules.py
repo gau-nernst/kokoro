@@ -57,10 +57,13 @@ class TextEncoder(nn.Module):
             x = c(x)
             x.masked_fill_(m, 0.0)
         x = x.transpose(1, 2)  # [B, T, chn]
-        input_lengths = input_lengths.cpu().numpy()
-        x = nn.utils.rnn.pack_padded_sequence(x, input_lengths, batch_first=True, enforce_sorted=False)
-        x, _ = self.lstm(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        if x.shape[0] > 1:
+            input_lengths = input_lengths.cpu().numpy()
+            x = nn.utils.rnn.pack_padded_sequence(x, input_lengths, batch_first=True, enforce_sorted=False)
+            x, _ = self.lstm(x)
+            x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        else:
+            x, _ = self.lstm(x)
         x = x.transpose(-1, -2)
         x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
         x_pad[:, :, :x.shape[-1]] = x
@@ -110,11 +113,14 @@ class ProsodyPredictor(nn.Module):
 
     def forward(self, texts, style, text_lengths, alignment, m):
         d = self.text_encoder(texts, style, text_lengths, m)
-        input_lengths = text_lengths.cpu().numpy()
-        x = nn.utils.rnn.pack_padded_sequence(d, input_lengths, batch_first=True, enforce_sorted=False)
+        if x.shape[0] > 1:
+            input_lengths = text_lengths.cpu().numpy()
+            x = nn.utils.rnn.pack_padded_sequence(d, input_lengths, batch_first=True, enforce_sorted=False)
+            x, _ = self.lstm(x)
+            x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        else:
+            x, _ = self.lstm(x)
         m = m.to(text_lengths.device).unsqueeze(1)
-        x, _ = self.lstm(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]])
         x_pad[:, :x.shape[1], :] = x
         x = x_pad.to(x.device)
@@ -164,11 +170,14 @@ class DurationEncoder(nn.Module):
                 x.masked_fill_(masks.unsqueeze(-1).transpose(-1, -2), 0.0)
             else:
                 x = x.transpose(-1, -2)
-                x = nn.utils.rnn.pack_padded_sequence(
-                    x, input_lengths, batch_first=True, enforce_sorted=False)
-                x, _ = block(x)
-                x, _ = nn.utils.rnn.pad_packed_sequence(
-                    x, batch_first=True)
+                if x.shape[0] > 1:
+                    x = nn.utils.rnn.pack_padded_sequence(
+                        x, input_lengths, batch_first=True, enforce_sorted=False)
+                    x, _ = block(x)
+                    x, _ = nn.utils.rnn.pad_packed_sequence(
+                        x, batch_first=True)
+                else:
+                    x, _ = block(x)
                 x = F.dropout(x, p=self.dropout, training=False)
                 x = x.transpose(-1, -2)
                 x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
