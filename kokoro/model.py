@@ -82,10 +82,10 @@ class KModel(torch.nn.Module):
         input_ids = list(filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), phonemes)))
         logger.debug(f"phonemes: {phonemes} -> input_ids: {input_ids}")
         assert len(input_ids)+2 <= self.context_length, (len(input_ids)+2, self.context_length)
-        input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
-        input_lengths = torch.LongTensor([input_ids.shape[-1]]).to(self.device)
+        input_ids = torch.tensor([[0, *input_ids, 0]], device=self.device, dtype=torch.long)
+        input_lengths = torch.tensor([input_ids.shape[-1]], device=self.device, dtype=torch.long)
         text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
-        text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1)).to(self.device)
+        text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1))
         bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
         ref_s = ref_s.to(self.device)
@@ -99,7 +99,7 @@ class KModel(torch.nn.Module):
         indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur)
         pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)
         pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
-        pred_aln_trg = pred_aln_trg.unsqueeze(0).to(self.device)
+        pred_aln_trg = pred_aln_trg.unsqueeze(0)
         en = d.transpose(-1, -2) @ pred_aln_trg
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)

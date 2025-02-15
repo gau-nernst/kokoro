@@ -65,9 +65,9 @@ class TextEncoder(nn.Module):
         else:
             x, _ = self.lstm(x)
         x = x.transpose(-1, -2)
-        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
+        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
         x_pad[:, :, :x.shape[-1]] = x
-        x = x_pad.to(x.device)
+        x = x_pad
         x.masked_fill_(m, 0.0)
         return x
 
@@ -121,9 +121,9 @@ class ProsodyPredictor(nn.Module):
         else:
             x, _ = self.lstm(x)
         m = m.to(text_lengths.device).unsqueeze(1)
-        x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]])
+        x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]], device=x.device)
         x_pad[:, :x.shape[1], :] = x
-        x = x_pad.to(x.device)
+        x = x_pad
         duration = self.duration_proj(nn.functional.dropout(x, 0.5, training=False))
         en = (d.transpose(-1, -2) @ alignment)
         return duration.squeeze(-1), en
@@ -180,9 +180,9 @@ class DurationEncoder(nn.Module):
                     x, _ = block(x)
                 x = F.dropout(x, p=self.dropout, training=False)
                 x = x.transpose(-1, -2)
-                x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
+                x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
                 x_pad[:, :, :x.shape[-1]] = x
-                x = x_pad.to(x.device)
+                x = x_pad
         return x.transpose(-1, -2)
 
 

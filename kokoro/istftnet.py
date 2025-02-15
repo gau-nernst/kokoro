@@ -83,19 +83,20 @@ class TorchSTFT(nn.Module):
         self.filter_length = filter_length
         self.hop_length = hop_length
         self.win_length = win_length
-        self.window = torch.from_numpy(get_window(window, win_length, fftbins=True).astype(np.float32))
+        window = torch.from_numpy(get_window(window, win_length, fftbins=True).astype(np.float32))
+        self.register_buffer("window", window)
 
     def transform(self, input_data):
         forward_transform = torch.stft(
             input_data,
-            self.filter_length, self.hop_length, self.win_length, window=self.window.to(input_data.device),
+            self.filter_length, self.hop_length, self.win_length, window=self.window,
             return_complex=True)
         return torch.abs(forward_transform), torch.angle(forward_transform)
 
     def inverse(self, magnitude, phase):
         inverse_transform = torch.istft(
             magnitude * torch.exp(phase * 1j),
-            self.filter_length, self.hop_length, self.win_length, window=self.window.to(magnitude.device))
+            self.filter_length, self.hop_length, self.win_length, window=self.window)
         return inverse_transform.unsqueeze(-2)  # unsqueeze to stay consistent with conv_transpose1d implementation
 
     def forward(self, input_data):
@@ -190,7 +191,7 @@ class SineGen(nn.Module):
         """
         f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
         # fundamental component
-        fn = torch.multiply(f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device))
+        fn = torch.multiply(f0, torch.tensor([[range(1, self.harmonic_num + 2)]], device=f0.device, dtype=torch.float32))
         # generate sine waveforms
         sine_waves = self._f02sine(fn) * self.sine_amp
         # generate uv signal
