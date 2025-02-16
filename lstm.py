@@ -68,12 +68,11 @@ def lstm_ref(x: Tensor, weights: list[Tensor]):
     ],
     key=[],
     reset_to_zero=["C_ptr"],
-    restore_value=["time_ptr"],
 )
 @triton.jit
 def lstm_triton_kernel(
     X_ptr,  # (L, B, input_dim)
-    C_ptr,  # (2, B, hidden_dim)
+    C_ptr,  # (B, hidden_dim * 2)
     Y_ptr,  # (L, B, hidden_dim * 2)
     weight_ih_ptr,  # (hidden_dim * 4, input_dim)
     weight_hh_ptr,  # (hidden_dim * 4, hidden_dim)
@@ -83,7 +82,7 @@ def lstm_triton_kernel(
     weight_hh_reverse_ptr,
     bias_ih_reverse_ptr,
     bias_hh_reverse_ptr,
-    time_ptr,
+    time: int,
     L: int,
     B: tl.constexpr,
     input_dim: tl.constexpr,
@@ -101,9 +100,6 @@ def lstm_triton_kernel(
     pid = tl.program_id(0)
     is_reverse = tl.program_id(1)
 
-    # place time in CUDA memory to use CUDA graph
-    time = tl.load(time_ptr)
-
     # select data based on direction
     if is_reverse == 0:
         X_ptr += time * B * input_dim
@@ -115,7 +111,7 @@ def lstm_triton_kernel(
         bhh_ptr = bias_hh_ptr
     else:
         X_ptr += (L - 1 - time) * B * input_dim
-        C_ptr += B * hidden_dim
+        C_ptr += hidden_dim
         Y_ptr += (L - 1 - time) * B * hidden_dim * 2 + hidden_dim
         H_ptr = Y_ptr + B * hidden_dim * 2  # next timestep
         wih_ptr = weight_ih_reverse_ptr
@@ -169,18 +165,12 @@ def lstm_triton_kernel(
     g += tl.load(Bih + hidden_dim * 2) + tl.load(Bhh + hidden_dim * 2)
     o += tl.load(Bih + hidden_dim * 3) + tl.load(Bhh + hidden_dim * 3)
 
-    offsets = tl.arange(0, B)[:, None] * hidden_dim + offsets_n  # (B, TILE_N)
+    offsets = tl.arange(0, B)[:, None] * hidden_dim * 2 + offsets_n  # (B, TILE_N)
     c = tl.load(C_ptr + offsets)
     c = tl.sigmoid(f) * c + tl.sigmoid(i) * libdevice.tanh(g)
     h = tl.sigmoid(o) * libdevice.tanh(c)
     tl.store(C_ptr + offsets, c)
-
-    offsets = tl.arange(0, B)[:, None] * hidden_dim * 2 + offsets_n  # (B, TILE_N)
     tl.store(Y_ptr + offsets, h)
-
-    # last block update time_ptr
-    if pid == tl.num_programs(0) - 1 and tl.program_id(1) == 1:
-        tl.store(time_ptr, time + 1)
 
 
 def lstm_triton(x: Tensor, weights: list[Tensor]):
@@ -190,13 +180,10 @@ def lstm_triton(x: Tensor, weights: list[Tensor]):
     out = x.new_empty(L, B, hidden_dim * 2)
     c = x.new_empty(2, B, hidden_dim)  # triton pre-hook will zero this out
 
-    # using int32 here since triton uses int32 for indexing
-    time = torch.zeros(1, dtype=torch.int32, device=x.device)
-
     def grid(meta):
         return (meta["hidden_dim"] // meta["TILE_N"], 2)
 
-    for _ in range(L):
+    for time in range(L):
         lstm_triton_kernel[grid](x, c, out, *weights, time, L, B, input_dim, hidden_dim)
 
     return out
@@ -239,7 +226,6 @@ if __name__ == "__main__":
     torch.cuda.make_graphed_callables(m_graph, (inputs,))
     lstm_triton_graph = torch.cuda.make_graphed_callables(lambda x: lstm_triton(x, m._flat_weights), (inputs,))
 
-    # lstm_triton_cudagraph = CUDAGraphWrapper(inputs, m._flat_weights)
     m0 = Timer("m(inputs)", globals=globals()).blocked_autorange()
     m1 = Timer("m_graph(inputs)", globals=globals()).blocked_autorange()
     m2 = Timer("lstm_ref(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
