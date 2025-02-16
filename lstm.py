@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -66,6 +68,7 @@ def lstm_ref(x: Tensor, weights: list[Tensor]):
     ],
     key=[],
     reset_to_zero=["C_ptr"],
+    restore_value=["time_ptr"],
 )
 @triton.jit
 def lstm_triton_kernel(
@@ -80,7 +83,7 @@ def lstm_triton_kernel(
     weight_hh_reverse_ptr,
     bias_ih_reverse_ptr,
     bias_hh_reverse_ptr,
-    time: int,
+    time_ptr,
     L: int,
     B: tl.constexpr,
     input_dim: tl.constexpr,
@@ -97,6 +100,9 @@ def lstm_triton_kernel(
     # and improve SM utilization w/o using separate CUDA streams.
     pid = tl.program_id(0)
     is_reverse = tl.program_id(1)
+
+    # place time in CUDA memory to use CUDA graph
+    time = tl.load(time_ptr)
 
     # select data based on direction
     if is_reverse == 0:
@@ -172,6 +178,10 @@ def lstm_triton_kernel(
     offsets = tl.arange(0, B)[:, None] * hidden_dim * 2 + offsets_n  # (B, TILE_N)
     tl.store(Y_ptr + offsets, h)
 
+    # last block update time_ptr
+    if pid == tl.num_programs(0) - 1 and tl.program_id(1) == 1:
+        tl.store(time_ptr, time + 1)
+
 
 def lstm_triton(x: Tensor, weights: list[Tensor]):
     # x: (L, B, D)
@@ -180,48 +190,16 @@ def lstm_triton(x: Tensor, weights: list[Tensor]):
     out = x.new_empty(L, B, hidden_dim * 2)
     c = x.new_empty(2, B, hidden_dim)  # triton pre-hook will zero this out
 
+    # using int32 here since triton uses int32 for indexing
+    time = torch.zeros(1, dtype=torch.int32, device=x.device)
+
     def grid(meta):
         return (meta["hidden_dim"] // meta["TILE_N"], 2)
 
-    for time in range(L):
+    for _ in range(L):
         lstm_triton_kernel[grid](x, c, out, *weights, time, L, B, input_dim, hidden_dim)
 
     return out
-
-
-class CUDAGraphWrapper:
-    def __init__(self, x: Tensor, weights: Tensor):
-        # x: (L, B, D)
-        self.g = torch.cuda.CUDAGraph()
-        self.x = torch.randn_like(x)
-
-        s = torch.cuda.Stream()
-        current_stream = torch.cuda.current_stream()
-
-        # warmup
-        s.wait_stream(current_stream)
-        with torch.cuda.stream(s):
-            for _ in range(3):
-                lstm_triton(self.x, weights)
-        current_stream.wait_stream(s)
-
-        # capture graph
-        with torch.cuda.graph(self.g):
-            self.out = lstm_triton(self.x, weights)
-
-        # x-forward: [max_L, 1, D]
-        # x-reverse: [max_L, 1, D]
-        # out-forward: [max_L, 1, D]
-        # out-reverse: [max_L, 1, D]
-        # copy into x-forward and x-reverse
-        # copy out of out-forward and out-reverse
-        #
-        # replay: 0->128. need to specify start and stop
-
-    def __call__(self, x: Tensor):
-        self.x.copy_(x)
-        self.g.replay()
-        return self.out
 
 
 if __name__ == "__main__":
@@ -241,7 +219,7 @@ if __name__ == "__main__":
     # bias_hh_l0_reverse
 
     with torch.no_grad():
-        inputs = torch.randn(1, 1, D, device="cuda")
+        inputs = torch.randn(16, 2, D, device="cuda")
         out_ref, _ = m(inputs)
 
         out = lstm_ref(inputs, m._flat_weights)
@@ -254,23 +232,35 @@ if __name__ == "__main__":
         print((out_ref - out).abs().mean().item())
 
     inputs = torch.randn(128, 1, D, device="cuda")
-    lstm_triton_cudagraph = CUDAGraphWrapper(inputs, m._flat_weights)
-    m0 = Timer("m(inputs)", globals=globals()).blocked_autorange()
-    m1 = Timer("lstm_ref(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
-    m2 = Timer("lstm_ref_compiled(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
-    m3 = Timer("lstm_triton(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
-    m4 = Timer("lstm_triton_cudagraph(inputs)", globals=globals()).blocked_autorange()
 
-    # TODO: CuDNN with CUDAGraph
+    # input shape for m_graph can't be changed
+    m_graph = copy.deepcopy(m)
+    m_graph.flatten_parameters()
+    torch.cuda.make_graphed_callables(m_graph, (inputs,))
+    lstm_triton_graph = torch.cuda.make_graphed_callables(lambda x: lstm_triton(x, m._flat_weights), (inputs,))
+
+    # lstm_triton_cudagraph = CUDAGraphWrapper(inputs, m._flat_weights)
+    m0 = Timer("m(inputs)", globals=globals()).blocked_autorange()
+    m1 = Timer("m_graph(inputs)", globals=globals()).blocked_autorange()
+    m2 = Timer("lstm_ref(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
+    m3 = Timer("lstm_ref_compiled(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
+    m4 = Timer("lstm_triton(inputs, m._flat_weights)", globals=globals()).blocked_autorange()
+    m5 = Timer("lstm_triton_graph(inputs)", globals=globals()).blocked_autorange()
+
     print(f"CuDNN: {m0.median * 1e3:.2f} ms")
-    print(f"Reference: {m1.median * 1e3:.2f} ms")
-    print(f"Reference (compiled): {m2.median * 1e3:.2f} ms")
-    print(f"Triton: {m3.median * 1e3:.2f} ms")
-    print(f"Triton CUDAGraph: {m4.median * 1e3:.2f} ms")
+    print(f"CuDNN (CUDA graph): {m1.median * 1e3:.2f} ms")
+    print(f"Reference: {m2.median * 1e3:.2f} ms")
+    print(f"Reference (compiled): {m3.median * 1e3:.2f} ms")
+    print(f"Triton: {m4.median * 1e3:.2f} ms")
+    print(f"Triton (CUDA graph): {m5.median * 1e3:.2f} ms")
 
     with torch.profiler.profile() as prof:
         m(inputs)
     prof.export_chrome_trace("cudnn.json.gz")
+
+    with torch.profiler.profile() as prof:
+        m_graph(inputs)
+    prof.export_chrome_trace("cudnn_cudagraph.json.gz")
 
     with torch.profiler.profile() as prof:
         lstm_ref_compiled(inputs, m._flat_weights)
@@ -281,5 +271,5 @@ if __name__ == "__main__":
     prof.export_chrome_trace("triton.json.gz")
 
     with torch.profiler.profile() as prof:
-        lstm_triton_cudagraph(inputs)
+        lstm_triton_graph(inputs)
     prof.export_chrome_trace("triton_cudagraph.json.gz")
