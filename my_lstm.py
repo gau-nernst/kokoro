@@ -16,7 +16,7 @@ from triton.language.extra import libdevice
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for TILE_N in [16, 32, 64]
+        for TILE_N in [8, 16, 32]
         for TILE_K in [32, 64, 128]
         for num_stages in [3, 4, 5, 6]
         for num_warps in [4, 8]
@@ -147,6 +147,11 @@ def lstm_triton(x: Tensor, weights: list[Tensor], c: Tensor, time: Tensor, lengt
 class MyLSTM(nn.Module):
     def __init__(self, lstm: nn.LSTM, max_length: int = 512):
         super().__init__()
+        assert lstm.num_layers == 1
+        assert lstm.bidirectional
+        self.max_length = max_length
+        self.batch_first = lstm.batch_first
+
         self.weight_ih = nn.Parameter(lstm._flat_weights[0].detach().clone())
         self.weight_hh = nn.Parameter(lstm._flat_weights[1].detach().clone())
         self.bias = nn.Parameter(lstm._flat_weights[2].detach() + lstm._flat_weights[3].detach())
@@ -199,8 +204,11 @@ class MyLSTM(nn.Module):
             max_length //= 2
 
     def forward(self, x: Tensor):
+        if self.batch_first:
+            x = x.transpose(0, 1)
         L, B, _ = x.shape
         assert B == 1
+        assert L < self.max_length * 2
         self.x[:L] = x
         self.c.zero_()
         self.time.fill_(0)
@@ -212,7 +220,12 @@ class MyLSTM(nn.Module):
                 g.replay()
                 _L -= length
 
-        return self.out[:L]
+        out = self.out[:L]
+        if self.batch_first:
+            out = out.transpose(0, 1)
+
+        # partial signature compat with nn.LSTM
+        return out, None
 
 
 if __name__ == "__main__":
@@ -226,7 +239,7 @@ if __name__ == "__main__":
         inputs = torch.randn(18, 1, D, device="cuda")
         out_ref, _ = m(inputs)
 
-        out = my_m(inputs)
+        out, _ = my_m(inputs)
         print((out_ref - out).abs().mean().item())
 
     inputs = torch.randn(200, 1, D, device="cuda")
