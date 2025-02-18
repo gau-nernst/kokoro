@@ -72,7 +72,7 @@ class KModel(torch.nn.Module):
         pred_dur: Optional[torch.LongTensor] = None
 
     @torch.no_grad()
-    def forward_with_tokens(self, input_ids: torch.Tensor, input_lengths: torch.Tensor, ref_s: torch.Tensor, speed: float, return_output: bool):
+    def forward_with_tokens(self, input_ids: torch.Tensor, input_lengths: torch.Tensor, ref_s: torch.Tensor, speed: float):
         # original
         # text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
         # text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1))
