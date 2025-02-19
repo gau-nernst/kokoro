@@ -173,11 +173,11 @@ class MyLSTM(nn.Module):
         B = 1
         input_dim = self.weight_ih.shape[1]
         hidden_dim = self.weight_hh.shape[1]
-        self.x = torch.randn(max_length, B, input_dim, device="cuda")
+        self.x = torch.randn(max_length * 2, B, input_dim, device="cuda")
         self.c = torch.randn(B, hidden_dim * 2, device="cuda")
         self.time = torch.zeros(1, dtype=torch.int32, device="cuda")
         self.length = torch.full((1,), max_length, dtype=torch.int32, device="cuda")
-        self.out = torch.randn(max_length, B, hidden_dim * 2, device="cuda")
+        self.out = torch.randn(max_length * 2, B, hidden_dim * 2, device="cuda")
 
         stream = torch.cuda.Stream()
         current_stream = torch.cuda.current_stream()
