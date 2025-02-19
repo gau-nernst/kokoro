@@ -87,7 +87,7 @@ class KModel(torch.nn.Module):
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)  # (B, D, T)
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)
 
-        s = ref_s[:, 128:]
+        s = ref_s[:, 128:].to(d_en.dtype)
         d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)  # (B, T, D)
         x, _ = self.predictor.lstm(d)
         duration = self.predictor.duration_proj(x)
@@ -96,7 +96,7 @@ class KModel(torch.nn.Module):
 
         # alignment
         indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur)
-        pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)  # (num_phonemes, total_duration)
+        pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device, dtype=d.dtype)  # (num_phonemes, total_duration)
         pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
         pred_aln_trg = pred_aln_trg.unsqueeze(0)
 
@@ -104,7 +104,7 @@ class KModel(torch.nn.Module):
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
 
         asr = t_en @ pred_aln_trg
-        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze()
+        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128].to(asr.dtype)).squeeze()
         return audio, pred_dur
 
     def forward(

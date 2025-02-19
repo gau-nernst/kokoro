@@ -78,15 +78,11 @@ class AdaLayerNorm(nn.Module):
         self.fc = nn.Linear(style_dim, channels*2)
 
     def forward(self, x, s):
-        x = x.transpose(-1, -2)
-        x = x.transpose(1, -1)
         h = self.fc(s)
-        h = h.view(h.size(0), h.size(1), 1)
-        gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        gamma, beta = gamma.transpose(1, -1), beta.transpose(1, -1)
-        x = F.layer_norm(x, (self.channels,), eps=self.eps)
-        x = (1 + gamma) * x + beta
-        return x.transpose(1, -1).transpose(-1, -2)
+        gamma, beta = h.unsqueeze(1).chunk(chunks=2, dim=2)
+        x_f32 = F.layer_norm(x.float(), (self.channels,), eps=self.eps)
+        x_f32 = x_f32 * (1 + gamma.float()) + beta.float()
+        return x_f32.to(x.dtype)
 
 
 class ProsodyPredictor(nn.Module):

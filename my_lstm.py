@@ -89,11 +89,11 @@ def lstm_triton_kernel(
     # TODO: try interleave format for Wih -> do load and compute together for ifgo
     # not sure how we can calculate the final output afterwards
     for _ in range(input_dim, 0, -TILE_K):
-        x = tl.load(X)
-        i += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 0), axis=-1)
-        f += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 1), axis=-1)
-        g += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 2), axis=-1)
-        o += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 3), axis=-1)
+        x = tl.load(X).to(tl.float32)
+        i += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 0).to(tl.float32), axis=-1)
+        f += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 1).to(tl.float32), axis=-1)
+        g += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 2).to(tl.float32), axis=-1)
+        o += tl.sum(x * tl.load(Wih + input_dim * hidden_dim * 3).to(tl.float32), axis=-1)
         X += TILE_K
         Wih += TILE_K
 
@@ -105,23 +105,23 @@ def lstm_triton_kernel(
         Whh = whh_ptr + (offsets_n * hidden_dim + offsets_k)  # (1, TILE_N, TILE_K)
 
         for _ in range(hidden_dim, 0, -TILE_K):
-            h = tl.load(H)
-            i += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 0), axis=-1)
-            f += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 1), axis=-1)
-            g += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 2), axis=-1)
-            o += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 3), axis=-1)
+            h = tl.load(H).to(tl.float32)
+            i += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 0).to(tl.float32), axis=-1)
+            f += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 1).to(tl.float32), axis=-1)
+            g += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 2).to(tl.float32), axis=-1)
+            o += tl.sum(h * tl.load(Whh + hidden_dim * hidden_dim * 3).to(tl.float32), axis=-1)
             H += TILE_K
             Whh += TILE_K
 
     offsets_n = (pid * TILE_N + tl.arange(0, TILE_N))[None, :]  # (1, TILE_N)
     Bias = bias_ptr + offsets_n
-    i += tl.load(Bias + hidden_dim * 0)
-    f += tl.load(Bias + hidden_dim * 1)
-    g += tl.load(Bias + hidden_dim * 2)
-    o += tl.load(Bias + hidden_dim * 3)
+    i += tl.load(Bias + hidden_dim * 0).to(tl.float32)
+    f += tl.load(Bias + hidden_dim * 1).to(tl.float32)
+    g += tl.load(Bias + hidden_dim * 2).to(tl.float32)
+    o += tl.load(Bias + hidden_dim * 3).to(tl.float32)
 
     offsets = tl.arange(0, B)[:, None] * hidden_dim * 2 + offsets_n  # (B, TILE_N)
-    c = tl.load(C_ptr + offsets)
+    c = tl.load(C_ptr + offsets).to(tl.float32)
     c = tl.sigmoid(f) * c + tl.sigmoid(i) * libdevice.tanh(g)
     h = tl.sigmoid(o) * libdevice.tanh(c)
     tl.store(C_ptr + offsets, c)
@@ -223,6 +223,7 @@ class MyLSTM(nn.Module):
         out = self.out[:L]
         if self.batch_first:
             out = out.transpose(0, 1)
+        out = out.to(x.dtype)
 
         # partial signature compat with nn.LSTM
         return out, None

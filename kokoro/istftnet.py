@@ -23,15 +23,15 @@ def get_padding(kernel_size, dilation=1):
 class AdaIN1d(nn.Module):
     def __init__(self, style_dim, num_features):
         super().__init__()
-        # affine should be False, however there's a bug in the old torch.onnx.export (not newer dynamo) that causes the channel dimension to be lost if affine=False. When affine is true, there's additional learnably parameters. This shouldn't really matter setting it to True, since we're in inference mode
-        self.norm = nn.InstanceNorm1d(num_features, affine=True)
         self.fc = nn.Linear(style_dim, num_features*2)
 
     def forward(self, x, s):
         h = self.fc(s)
         h = h.view(h.size(0), h.size(1), 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        return (1 + gamma) * self.norm(x) + beta
+        x_f32 = F.instance_norm(x.float())
+        x_f32 = (1 + gamma.float()) * x_f32 + beta.float()
+        return x_f32.to(x.dtype)
 
 
 class AdaINResBlock1(nn.Module):
@@ -91,16 +91,19 @@ class TorchSTFT(nn.Module):
 
     def transform(self, input_data):
         forward_transform = torch.stft(
-            input_data,
+            input_data.float(),
             self.filter_length, self.hop_length, self.win_length, window=self.window,
             return_complex=True)
-        return torch.abs(forward_transform), torch.angle(forward_transform)
+        return (
+            torch.abs(forward_transform).to(input_data.dtype),
+            torch.angle(forward_transform).to(input_data.dtype),
+        )
 
     def inverse(self, magnitude, phase):
         inverse_transform = torch.istft(
-            magnitude * torch.exp(phase * 1j),
+            magnitude.float() * torch.exp(phase.float() * 1j),
             self.filter_length, self.hop_length, self.win_length, window=self.window)
-        return inverse_transform.unsqueeze(-2)  # unsqueeze to stay consistent with conv_transpose1d implementation
+        return inverse_transform.to(magnitude.dtype).unsqueeze(-2)  # unsqueeze to stay consistent with conv_transpose1d implementation
 
     def forward(self, input_data):
         self.magnitude, self.phase = self.transform(input_data)
@@ -252,7 +255,7 @@ class SourceModuleHnNSF(nn.Module):
         # source for harmonic branch
         with torch.no_grad():
             sine_wavs, uv, _ = self.l_sin_gen(x)
-        sine_merge = self.l_tanh(self.l_linear(sine_wavs))
+        sine_merge = self.l_tanh(self.l_linear(sine_wavs.to(x.dtype)))
         # source for noise branch, in the same shape as uv
         noise = torch.randn_like(uv) * self.sine_amp / 3
         return sine_merge, noise, uv
