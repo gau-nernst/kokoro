@@ -121,8 +121,8 @@ class KModel(torch.nn.Module):
         input_lengths = torch.tensor([input_ids.shape[-1]], device=self.device, dtype=torch.long)
 
         audio, pred_dur = self.forward_with_tokens(input_ids, input_lengths, ref_s, speed)
-        audio = audio.squeeze().cpu()
-        pred_dur = pred_dur.cpu() if pred_dur is not None else None
+        audio = audio.float().squeeze().cpu()
+        pred_dur = pred_dur.float().cpu() if pred_dur is not None else None
         logger.debug(f"pred_dur: {pred_dur}")
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
