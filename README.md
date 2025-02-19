@@ -4,7 +4,7 @@ Version                            | Time for 7.5s audio | Time for 26.9s audio
 -----------------------------------|---------------------|---------------------
 upstream e648c060                  | 53.39 ms            | 172.86 ms
 `torch.compile()` BERT and Decoder | 40.45 ms (1.3x)     | 114.28 ms (1.5x)
-+ custom LSTM                      | 32.88 ms (1.6x)     |  94.35 ms (1.8x)
+\+ custom LSTM                     | 32.88 ms (1.6x)     |  94.35 ms (1.8x)
 
 An inference library for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M). You can [`pip install kokoro`](https://pypi.org/project/kokoro/).
 
