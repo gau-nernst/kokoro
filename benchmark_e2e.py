@@ -18,6 +18,7 @@ prompts = ds["prompt"]
 # kokoro = Kokoro("kokoro-v1.0.fp16-gpu.onnx", "voices-v1.0.bin")
 
 pipe = KPipeline("a")
+pipe.model.bfloat16()
 pipe.model.bert.compile()
 pipe.model.decoder.compile()
 pipe.model.text_encoder.lstm = MyLSTM(pipe.model.text_encoder.lstm)
