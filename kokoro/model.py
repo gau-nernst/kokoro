@@ -77,20 +77,24 @@ class KModel(torch.nn.Module):
         # text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
         # text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1))
 
-        if input_ids.shape[0] > 1:
-            pos_ids = torch.arange(input_lengths.max(), device=self.device)
-            text_mask = pos_ids >= input_lengths.unsqueeze(1)
-            bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
-        else:
-            text_mask = None
-            bert_dur = self.bert(input_ids)
-        d_en = self.bert_encoder(bert_dur).transpose(-1, -2)  # (B, D, T)
-        t_en = self.text_encoder(input_ids, input_lengths, text_mask)
+        with torch.profiler.record_function("bert"):
+            if input_ids.shape[0] > 1:
+                pos_ids = torch.arange(input_lengths.max(), device=self.device)
+                text_mask = pos_ids >= input_lengths.unsqueeze(1)
+                bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
+            else:
+                text_mask = None
+                bert_dur = self.bert(input_ids)
+            d_en = self.bert_encoder(bert_dur).transpose(-1, -2)  # (B, D, T)
+        with torch.profiler.record_function("text_encoder"):
+            t_en = self.text_encoder(input_ids, input_lengths, text_mask)
 
-        s = ref_s[:, 128:].to(d_en.dtype)
-        d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)  # (B, T, D)
-        x, _ = self.predictor.lstm(d)
-        duration = self.predictor.duration_proj(x)
+        s = ref_s[:, 128:]
+        with torch.profiler.record_function("predictor.text_encoder"):
+            d = self.predictor.text_encoder(d_en, s.to(d_en.dtype), input_lengths, text_mask)  # (B, T, D)
+        with torch.profiler.record_function("predictor.lstm"):
+            x, _ = self.predictor.lstm(d)
+        duration = self.predictor.duration_proj(x).float()
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
 
@@ -101,10 +105,12 @@ class KModel(torch.nn.Module):
         pred_aln_trg = pred_aln_trg.unsqueeze(0)
 
         en = d.transpose(-1, -2) @ pred_aln_trg  # (B, D, total_duration)
-        F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
+        with torch.profiler.record_function("predictor.F0Ntrain"):
+            F0_pred, N_pred = self.predictor.F0Ntrain(en, s.to(en.dtype))
 
         asr = t_en @ pred_aln_trg
-        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128].to(asr.dtype)).squeeze()
+        with torch.profiler.record_function("decoder"):
+            audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128].to(asr.dtype)).squeeze()
         return audio, pred_dur
 
     def forward(

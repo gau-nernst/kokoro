@@ -68,13 +68,19 @@ class AdaINResBlock1(nn.Module):
         self.alpha1 = nn.ParameterList([nn.Parameter(torch.ones(1, channels, 1)) for i in range(len(self.convs1))])
         self.alpha2 = nn.ParameterList([nn.Parameter(torch.ones(1, channels, 1)) for i in range(len(self.convs2))])
 
+    @staticmethod
+    def snake(x: torch.Tensor, a: torch.Tensor):
+        x_f32 = x.float()
+        a_f32 = a.float()
+        return (x_f32 + (1 / a_f32) * torch.sin(a_f32 * x_f32) ** 2).to(x.dtype)
+
     def forward(self, x, s):
         for c1, c2, n1, n2, a1, a2 in zip(self.convs1, self.convs2, self.adain1, self.adain2, self.alpha1, self.alpha2):
             xt = n1(x, s)
-            xt = xt + (1 / a1) * (torch.sin(a1 * xt) ** 2)  # Snake1D
+            xt = self.snake(xt, a1)
             xt = c1(xt)
             xt = n2(xt, s)
-            xt = xt + (1 / a2) * (torch.sin(a2 * xt) ** 2)  # Snake1D
+            xt = self.snake(xt, a2)
             xt = c2(xt)
             x = xt + x
         return x
@@ -91,19 +97,16 @@ class TorchSTFT(nn.Module):
 
     def transform(self, input_data):
         forward_transform = torch.stft(
-            input_data.float(),
+            input_data,
             self.filter_length, self.hop_length, self.win_length, window=self.window,
             return_complex=True)
-        return (
-            torch.abs(forward_transform).to(input_data.dtype),
-            torch.angle(forward_transform).to(input_data.dtype),
-        )
+        return torch.abs(forward_transform), torch.angle(forward_transform)
 
     def inverse(self, magnitude, phase):
         inverse_transform = torch.istft(
-            magnitude.float() * torch.exp(phase.float() * 1j),
+            magnitude * torch.exp(phase * 1j),
             self.filter_length, self.hop_length, self.win_length, window=self.window)
-        return inverse_transform.to(magnitude.dtype).unsqueeze(-2)  # unsqueeze to stay consistent with conv_transpose1d implementation
+        return inverse_transform.unsqueeze(-2)  # unsqueeze to stay consistent with conv_transpose1d implementation
 
     def forward(self, input_data):
         self.magnitude, self.phase = self.transform(input_data)
@@ -254,7 +257,7 @@ class SourceModuleHnNSF(nn.Module):
         """
         # source for harmonic branch
         with torch.no_grad():
-            sine_wavs, uv, _ = self.l_sin_gen(x)
+            sine_wavs, uv, _ = self.l_sin_gen(x.float())  # MUST BE DONE IN FP32
         sine_merge = self.l_tanh(self.l_linear(sine_wavs.to(x.dtype)))
         # source for noise branch, in the same shape as uv
         noise = torch.randn_like(uv) * self.sine_amp / 3
@@ -308,10 +311,10 @@ class Generator(nn.Module):
             f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
             har_source, noi_source, uv = self.m_source(f0)
             har_source = har_source.transpose(1, 2).squeeze(1)
-            har_spec, har_phase = self.stft.transform(har_source)
-            har = torch.cat([har_spec, har_phase], dim=1)
+            har_spec, har_phase = self.stft.transform(har_source.float())
+            har = torch.cat([har_spec, har_phase], dim=1).to(x.dtype)
         for i in range(self.num_upsamples):
-            x = F.leaky_relu(x, negative_slope=0.1) 
+            x = F.leaky_relu(x, negative_slope=0.1)
             x_source = self.noise_convs[i](har)
             x_source = self.noise_res[i](x_source, s)
             x = self.ups[i](x)
@@ -326,7 +329,7 @@ class Generator(nn.Module):
                     xs += self.resblocks[i*self.num_kernels+j](x, s)
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
-        x = self.conv_post(x)
+        x = self.conv_post(x).float()
         spec = torch.exp(x[:,:self.post_n_fft // 2 + 1, :])
         phase = torch.sin(x[:, self.post_n_fft // 2 + 1:, :])
         return self.stft.inverse(spec, phase)
@@ -424,5 +427,6 @@ class Decoder(nn.Module):
             x = block(x, s)
             if block.upsample_type != "none":
                 res = False
-        x = self.generator(x, s, F0_curve)
+        with torch.profiler.record_function("decoder.generator"):
+            x = self.generator(x, s, F0_curve)
         return x
